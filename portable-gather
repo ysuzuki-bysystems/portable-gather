@@ -1,0 +1,85 @@
+#!/bin/bash
+# vim:sw=2 ts=2 sts=2
+
+set -e
+
+GATHER_APP_URL='https://api.v2.gather.town/api/v2/releases/latest/windows/v2'
+
+dir="$(dirname $0)"
+dir="$(cd $dir && pwd)"
+
+
+mstack="$dir/gather.mstack/"
+data="$dir/data"
+
+build_layer10() {
+  mkdir "$mstack/layer@10"
+  sudo pacstrap -K -c "$mstack/layer@10" base
+}
+
+build_layer20() {
+  mkdir "$mstack/rw"
+  sudo systemd-nspawn --mstack="$mstack" --pipe tee -a /etc/pacman.conf << EOF
+[multilib]
+Include = /etc/pacman.d/mirrorlist
+EOF
+  sudo systemd-nspawn --mstack="$mstack" pacman -Syyu --noconfirm wine vulkan-icd-loader libglvnd vulkan-intel winetricks wine-mono pipewire pipewire-pulse lib32-pipewire lib32-libpulse noto-fonts-cjk noto-fonts-emoji noto-fonts-extra
+  sudo mv "$mstack/rw/data" "$mstack/layer@20"
+  sudo rm -rf "$mstack/rw"
+}
+
+build_layer30() {
+  tmp=$(mktemp -d)
+  curl -L "$GATHER_APP_URL" -o"$tmp/setup"
+  7z x "$tmp/setup" -o"$tmp/extract"
+  7z x "$tmp/extract/\$PLUGINSDIR/app-64.7z" -o"$tmp/app"
+  tar cf "$tmp/app.tar" -C "$tmp" app
+
+  mkdir "$mstack/rw"
+  sudo systemd-nspawn --mstack="$mstack" useradd -m -u$(id -u) user
+  sudo systemd-nspawn --mstack="$mstack" --user user winetricks dxvk
+  sudo systemd-nspawn --mstack="$mstack" --user user --pipe tar xf - -C /home/user < "$tmp/app.tar"
+  sudo mv "$mstack/rw/data" "$mstack/layer@30"
+  sudo rm -rf "$mstack/rw"
+
+  rm -rf "$tmp"
+}
+
+build() {
+  [[ "$opt_force" != yes ]] || clean
+  mkdir "$mstack"
+
+  build_layer10
+  build_layer20
+  build_layer30
+}
+
+clean() {
+  sudo rm -rf "$mstack"
+}
+
+run() {
+  [[ -d "$mstack" ]] || {
+    echo Please $0 build >&2
+    exit -1
+  }
+  mkdir -p "$data"
+
+  sudo systemd-nspawn --mstack="$mstack" --user=user --bind "$data:/home/user/.wine/" -EDISPLAY=$DISPLAY -EXDG_RUNTIME_DIR=/run/user/$(id -u) --bind /run/user/$(id -u) --bind /dev/dri/ --property='DeviceAllow=char-drm rwm' --bind /tmp/.X11-unix --bind $XAUTHORITY -EXAUTHORITY=$XAUTHORITY -EWINEDLLOVERRIDES="libglesv2.dll=d" wine /home/user/app/GatherV2.exe --force-device-scale-factor=1.5
+}
+
+args=$(getopt -o f -l force -- "$@") || exit -1
+eval "set -- $args"
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -f | --force) opt_force=yes; shift;;
+    --) shift; break;;
+  esac
+done
+
+case "$1" in
+  build) build ;;
+  clean) clean ;;
+  run | *) run ;;
+esac
