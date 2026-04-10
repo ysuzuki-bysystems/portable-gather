@@ -6,6 +6,11 @@
 
 でポータブルな環境を構築する試み
 
+## Usage
+
+1. `./portable-gather build` ... Build nspawn container.
+2. `./portable-gather` ... Run App!
+
 ## Required
 
 - pacstrap
